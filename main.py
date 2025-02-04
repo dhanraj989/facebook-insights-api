@@ -129,3 +129,7 @@ async def get_page_summary(username: str):
     )
 
     return {"summary": response.choices[0].message.content}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Default to 10000 if PORT is not set
+    uvicorn.run(app, host="0.0.0.0", port=port)
