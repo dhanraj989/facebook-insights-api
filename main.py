@@ -93,7 +93,7 @@ def get_page_details(username: str, background_tasks: BackgroundTasks):
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
-    if not page_doc.exists():
+    if not page_doc.exists:
         page_data = scrape_facebook_page(username)
         background_tasks.add_task(store_page_data, username, page_data)
     else:
