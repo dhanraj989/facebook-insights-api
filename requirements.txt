@@ -7,3 +7,4 @@ requests
 playwright
 groq
 pyscript
+upstash-redis
