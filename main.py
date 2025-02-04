@@ -11,38 +11,28 @@ import groq
 import subprocess
 import json
 
-# Set authentication for GCP services
 google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
 if google_credentials_json:
-    # Write JSON content to a temporary file (Render does not allow direct file usage)
     credentials_path = "/tmp/gcp_credentials.json"
     with open(credentials_path, "w") as f:
         f.write(google_credentials_json)
-
-    # Set the environment variable to point to this file
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
-# Initialize FastAPI
 app = FastAPI()
 
-# Redis Configuration
 redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
 
-# Firestore (NoSQL Database)
-DB_NAME = "facebook_insights"
+DB_NAME = "facebookinsights"
 firestore_client = firestore.Client()
 
-# Google Cloud Storage (GCS) Setup
 GCS_BUCKET = "facebook-insights-bucket"
 gcs_client = storage.Client()
 bucket = gcs_client.bucket(GCS_BUCKET)
 
-# Groq API for AI Summary
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = groq.Client(api_key=GROQ_API_KEY)
 
-# Pydantic Models
 class Page(BaseModel):
     username: str
     page_name: str
@@ -57,7 +47,6 @@ class Page(BaseModel):
     posts: Optional[List[dict]]
     followers_list: Optional[List[dict]]
 
-# Upload images to GCS
 def upload_to_gcs(file_url, destination_blob_name):
     response = requests.get(file_url)
     if response.status_code == 200:
@@ -67,8 +56,6 @@ def upload_to_gcs(file_url, destination_blob_name):
     return None
 
 def scrape_facebook_page(username: str):
-    """Runs a separate Playwright script as a subprocess and returns JSON output."""
-    print(f"🔍 Running Playwright Scraper for {username}")
     try:
         result = subprocess.run(
             ["python", "scraper.py", username],
@@ -76,48 +63,37 @@ def scrape_facebook_page(username: str):
             text=True
         )
         return json.loads(result.stdout)
-    except Exception as e:
-        print(f"❌ Error running Playwright: {e}")
+    except Exception:
         return {}
 
 def store_page_data(username, data):
-    """Stores scraped data in Firestore & Redis in the background"""
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_ref.set(data)
-    redis_client.setex(f"page:{username}", 300, str(data))  # Cache for 5 min
+    redis_client.setex(f"page:{username}", 300, str(data))
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to Facebook Insights API!"}
 
-# GET Endpoint to Fetch Page Details
 @app.get("/page/{username}")
 def get_page_details(username: str, background_tasks: BackgroundTasks):
-    print(f"🔍 Fetching details for: {username}")
-
     cache_key = f"page:{username}"
     cached_data = redis_client.get(cache_key)
     
     if cached_data:
-        print("✅ Found in Cache")
         return eval(cached_data)
 
-    # Check Firestore
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
     if not page_doc.exists:
-        print("🚀 Scraping Data (Not in Firestore)")
         page_data = scrape_facebook_page(username)
-        print(f"📌 Scraped Data: {page_data}")
         background_tasks.add_task(store_page_data, username, page_data)
     else:
-        print("✅ Found in Firestore")
         page_data = page_doc.to_dict()
 
     return page_data
 
-# Search Pages with Filters & Pagination
 @app.get("/pages")
 async def search_pages(
     min_followers: Optional[int] = Query(0), 
@@ -136,7 +112,6 @@ async def search_pages(
 
     return {"total": len(page_list), "page": page, "pages": page_list}
 
-# AI-Generated Summary for a Page
 @app.get("/page/{username}/summary")
 async def get_page_summary(username: str):
     page_ref = firestore_client.collection(DB_NAME).document(username)
