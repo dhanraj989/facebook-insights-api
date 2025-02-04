@@ -9,8 +9,8 @@ from typing import List, Optional
 import groq
 import subprocess
 import json
-from upstash_redis import Redis
 
+# Load Google Cloud Credentials
 google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
 if google_credentials_json:
@@ -19,26 +19,23 @@ if google_credentials_json:
         f.write(google_credentials_json)
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
+# FastAPI App Initialization
 app = FastAPI()
 
+# Firestore Database
 DB_NAME = "facebookinsights"
 firestore_client = firestore.Client()
 
+# Google Cloud Storage (GCS) Setup
 GCS_BUCKET = "facebook-insights-bucket"
 gcs_client = storage.Client()
 bucket = gcs_client.bucket(GCS_BUCKET)
 
+# Groq API Key for AI-based summaries
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = groq.Client(api_key=GROQ_API_KEY)
 
-redis_url = os.getenv("UPSTASH_REDIS_URL")
-redis_token = os.getenv("UPSTASH_REDIS_TOKEN")
-
-if redis_url and redis_token:
-    redis_client = Redis(url=redis_url, token=redis_token)
-else:
-    redis_client = None
-
+# Pydantic Model for Page Data
 class Page(BaseModel):
     username: str
     page_name: str
@@ -53,6 +50,7 @@ class Page(BaseModel):
     posts: Optional[List[dict]]
     followers_list: Optional[List[dict]]
 
+# Upload images to Google Cloud Storage (GCS)
 def upload_to_gcs(file_url, destination_blob_name):
     response = requests.get(file_url)
     if response.status_code == 200:
@@ -61,6 +59,7 @@ def upload_to_gcs(file_url, destination_blob_name):
         return f"https://storage.googleapis.com/{GCS_BUCKET}/{destination_blob_name}"
     return None
 
+# Scraper Function
 def scrape_facebook_page(username: str):
     try:
         result = subprocess.run(
@@ -72,26 +71,19 @@ def scrape_facebook_page(username: str):
     except Exception:
         return {}
 
+# Store Data in Firestore
 def store_page_data(username, data):
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_ref.set(data)
-    if redis_client:
-        redis_client.setex(f"page:{username}", 300, json.dumps(data))
 
+# Root Route
 @app.get("/")
 async def root():
     return {"message": "Welcome to Facebook Insights API!"}
 
+# Fetch Page Details
 @app.get("/page/{username}")
 def get_page_details(username: str, background_tasks: BackgroundTasks):
-    cache_key = f"page:{username}"
-    
-    cached_data = redis_client.get(cache_key) if redis_client else None
-    
-    if cached_data:
-        print(f"✅ Cache Hit: {cached_data}")
-        return json.loads(cached_data)
-
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
@@ -102,7 +94,7 @@ def get_page_details(username: str, background_tasks: BackgroundTasks):
         page_data = scrape_facebook_page(username)
         print(f"📌 Scraped Data: {page_data}")
 
-        if page_data:  # Only store if data is valid
+        if page_data:  # Store only if valid data
             background_tasks.add_task(store_page_data, username, page_data)
         else:
             print("⚠️ Scraping returned empty data")
@@ -112,6 +104,7 @@ def get_page_details(username: str, background_tasks: BackgroundTasks):
 
     return page_data
 
+# Search Pages with Filters & Pagination
 @app.get("/pages")
 async def search_pages(
     min_followers: Optional[int] = Query(0), 
@@ -130,6 +123,7 @@ async def search_pages(
 
     return {"total": len(page_list), "page": page, "pages": page_list}
 
+# AI-Generated Summary for a Page
 @app.get("/page/{username}/summary")
 async def get_page_summary(username: str):
     page_ref = firestore_client.collection(DB_NAME).document(username)
@@ -148,6 +142,7 @@ async def get_page_summary(username: str):
 
     return {"summary": response.choices[0].message.content}
 
+# Run the FastAPI Server
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))  # Default to 10000 if PORT is not set
     uvicorn.run(app, host="0.0.0.0", port=port)
