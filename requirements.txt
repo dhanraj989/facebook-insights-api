@@ -1,1 +1,9 @@
+fastapi
+uvicorn
 google-cloud-storage
+google-cloud-firestore
+redis
+requests
+playwright
+groq
+pyscript
