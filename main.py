@@ -1,5 +1,6 @@
 import os
 import requests
+import redis
 import asyncio
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from playwright.sync_api import sync_playwright
@@ -10,19 +11,16 @@ import groq
 import subprocess
 import json
 
-# Load Google Cloud Credentials
-google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+# Set authentication for GCP services
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "metal-hologram-447219-t3-c6fa5e27311a.json"
 
-if google_credentials_json:
-    credentials_path = "/tmp/gcp_credentials.json"
-    with open(credentials_path, "w") as f:
-        f.write(google_credentials_json)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
-
-# FastAPI App Initialization
+# Initialize FastAPI
 app = FastAPI()
 
-# Firestore Database
+# Redis Configuration
+redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+
+# Firestore (NoSQL Database)
 DB_NAME = "facebookinsights"
 firestore_client = firestore.Client()
 
@@ -31,11 +29,11 @@ GCS_BUCKET = "facebook-insights-bucket"
 gcs_client = storage.Client()
 bucket = gcs_client.bucket(GCS_BUCKET)
 
-# Groq API Key for AI-based summaries
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Groq API for AI Summary
+GROQ_API_KEY = "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"
 groq_client = groq.Client(api_key=GROQ_API_KEY)
 
-# Pydantic Model for Page Data
+# Pydantic Models
 class Page(BaseModel):
     username: str
     page_name: str
@@ -50,7 +48,7 @@ class Page(BaseModel):
     posts: Optional[List[dict]]
     followers_list: Optional[List[dict]]
 
-# Upload images to Google Cloud Storage (GCS)
+# Upload images to GCS
 def upload_to_gcs(file_url, destination_blob_name):
     response = requests.get(file_url)
     if response.status_code == 200:
@@ -59,8 +57,9 @@ def upload_to_gcs(file_url, destination_blob_name):
         return f"https://storage.googleapis.com/{GCS_BUCKET}/{destination_blob_name}"
     return None
 
-# Scraper Function
 def scrape_facebook_page(username: str):
+    """Runs a separate Playwright script as a subprocess and returns JSON output."""
+    print(f"🔍 Running Playwright Scraper for {username}")
     try:
         result = subprocess.run(
             ["python", "scraper.py", username],
@@ -68,36 +67,41 @@ def scrape_facebook_page(username: str):
             text=True
         )
         return json.loads(result.stdout)
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error running Playwright: {e}")
         return {}
 
-# Store Data in Firestore
 def store_page_data(username, data):
+    """Stores scraped data in Firestore & Redis in the background"""
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_ref.set(data)
+    redis_client.setex(f"page:{username}", 300, str(data))  # Cache for 5 min
 
-# Root Route
 @app.get("/")
 async def root():
     return {"message": "Welcome to Facebook Insights API!"}
 
-# Fetch Page Details
+# GET Endpoint to Fetch Page Details
 @app.get("/page/{username}")
 def get_page_details(username: str, background_tasks: BackgroundTasks):
+    print(f"🔍 Fetching details for: {username}")
+
+    cache_key = f"page:{username}"
+    cached_data = redis_client.get(cache_key)
+    
+    if cached_data:
+        print("✅ Found in Cache")
+        return eval(cached_data)
+
+    # Check Firestore
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
-
-    print(f"🔍 Checking Firestore for {username}")
 
     if not page_doc.exists:
         print("🚀 Scraping Data (Not in Firestore)")
         page_data = scrape_facebook_page(username)
         print(f"📌 Scraped Data: {page_data}")
-
-        if page_data:  # Store only if valid data
-            background_tasks.add_task(store_page_data, username, page_data)
-        else:
-            print("⚠️ Scraping returned empty data")
+        background_tasks.add_task(store_page_data, username, page_data)
     else:
         print("✅ Found in Firestore")
         page_data = page_doc.to_dict()
@@ -129,7 +133,7 @@ async def get_page_summary(username: str):
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
-    if not page_doc.exists():
+    if not page_doc.exists:
         raise HTTPException(status_code=404, detail="Page not found")
 
     page_data = page_doc.to_dict()
@@ -141,8 +145,3 @@ async def get_page_summary(username: str):
     )
 
     return {"summary": response.choices[0].message.content}
-
-# Run the FastAPI Server
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Default to 10000 if PORT is not set
-    uvicorn.run(app, host="0.0.0.0", port=port)
