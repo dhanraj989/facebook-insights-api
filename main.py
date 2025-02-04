@@ -1,6 +1,5 @@
 import os
 import requests
-import redis
 import asyncio
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from playwright.sync_api import sync_playwright
@@ -10,6 +9,7 @@ from typing import List, Optional
 import groq
 import subprocess
 import json
+from upstash_redis import Redis
 
 google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
@@ -21,8 +21,6 @@ if google_credentials_json:
 
 app = FastAPI()
 
-redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
-
 DB_NAME = "facebookinsights"
 firestore_client = firestore.Client()
 
@@ -32,6 +30,14 @@ bucket = gcs_client.bucket(GCS_BUCKET)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = groq.Client(api_key=GROQ_API_KEY)
+
+redis_url = os.getenv("UPSTASH_REDIS_URL")
+redis_token = os.getenv("UPSTASH_REDIS_TOKEN")
+
+if redis_url and redis_token:
+    redis_client = Redis(url=redis_url, token=redis_token)
+else:
+    redis_client = None
 
 class Page(BaseModel):
     username: str
@@ -69,7 +75,8 @@ def scrape_facebook_page(username: str):
 def store_page_data(username, data):
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_ref.set(data)
-    redis_client.setex(f"page:{username}", 300, str(data))
+    if redis_client:
+        redis_client.setex(f"page:{username}", 300, json.dumps(data))
 
 @app.get("/")
 async def root():
@@ -78,15 +85,15 @@ async def root():
 @app.get("/page/{username}")
 def get_page_details(username: str, background_tasks: BackgroundTasks):
     cache_key = f"page:{username}"
-    cached_data = redis_client.get(cache_key)
+    cached_data = redis_client.get(cache_key) if redis_client else None
     
     if cached_data:
-        return eval(cached_data)
+        return json.loads(cached_data)
 
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
-    if not page_doc.exists:
+    if not page_doc.exists():
         page_data = scrape_facebook_page(username)
         background_tasks.add_task(store_page_data, username, page_data)
     else:
@@ -117,7 +124,7 @@ async def get_page_summary(username: str):
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
-    if not page_doc.exists:
+    if not page_doc.exists():
         raise HTTPException(status_code=404, detail="Page not found")
 
     page_data = page_doc.to_dict()
