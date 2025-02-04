@@ -12,7 +12,16 @@ import subprocess
 import json
 
 # Set authentication for GCP services
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "metal-hologram-447219-t3-c6fa5e27311a.json"
+google_credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+if google_credentials_json:
+    # Write JSON content to a temporary file (Render does not allow direct file usage)
+    credentials_path = "/tmp/gcp_credentials.json"
+    with open(credentials_path, "w") as f:
+        f.write(google_credentials_json)
+
+    # Set the environment variable to point to this file
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
 # Initialize FastAPI
 app = FastAPI()
@@ -30,7 +39,7 @@ gcs_client = storage.Client()
 bucket = gcs_client.bucket(GCS_BUCKET)
 
 # Groq API for AI Summary
-GROQ_API_KEY = "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"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = groq.Client(api_key=GROQ_API_KEY)
 
 # Pydantic Models
