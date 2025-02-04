@@ -85,18 +85,29 @@ async def root():
 @app.get("/page/{username}")
 def get_page_details(username: str, background_tasks: BackgroundTasks):
     cache_key = f"page:{username}"
+    
     cached_data = redis_client.get(cache_key) if redis_client else None
     
     if cached_data:
+        print(f"✅ Cache Hit: {cached_data}")
         return json.loads(cached_data)
 
     page_ref = firestore_client.collection(DB_NAME).document(username)
     page_doc = page_ref.get()
 
+    print(f"🔍 Checking Firestore for {username}")
+
     if not page_doc.exists:
+        print("🚀 Scraping Data (Not in Firestore)")
         page_data = scrape_facebook_page(username)
-        background_tasks.add_task(store_page_data, username, page_data)
+        print(f"📌 Scraped Data: {page_data}")
+
+        if page_data:  # Only store if data is valid
+            background_tasks.add_task(store_page_data, username, page_data)
+        else:
+            print("⚠️ Scraping returned empty data")
     else:
+        print("✅ Found in Firestore")
         page_data = page_doc.to_dict()
 
     return page_data
